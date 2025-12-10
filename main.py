@@ -1,4 +1,6 @@
 # Main
+import os
+
 import librosa as lb
 
 import numpy as np
@@ -31,30 +33,51 @@ def stats(x, prefix):
         stats[f"{prefix}{i}_max"]  = float(np.max(v))"""
     return stats
 
+def get_stats(x, features):
+    mean = np.mean(x)
+    std = np.std(x)
+    return np.array([mean, std])
+
 def get_time_domain_features(path, sr, duration=6.0):
     y, sr = load_audio(path, sr=sr, duration=duration, mono=True)
 
-    features = {}
+    time_domain_features = np.zeros(0)
     # Time domain
-    zcr_mean = np.mean(lb.feature.zero_crossings(y)[0])
-    zcr_mean = np.mean(zcr)
-    features.update(stats(zcr, "zcr_"))
-    rms = lb.feature.rms(y=y, sr=sr)[0]
-    features.update(stats(rms, "rms_"))
+    zcr = lb.feature.zero_crossings(y)[0]
+    zcr_stats = get_stats(zcr, time_domain_features)
 
+    rms = lb.feature.rms(y=y, sr=sr)[0]
+    rms_stats = get_stats(rms, time_domain_features)
+    return np.concatenate((zcr_stats, rms_stats))
+
+def get_frequency_domain_features(y, sr, duration=6.0):
     # Frequency domain
     # magnitude STFT
     stft = np.abs(lb.stft(y, n_fft=sr, hop_length=sr//2))
 
     # Features
+    frequency_domain_features = np.zeros(0)
     spec_centroid = lb.feature.spectral_centroid(S=stft, sr=sr)[0]
-    spec_bw = lb.feature.spectral_bandwidth(S=stft, sr=sr)[0]
-    spec_rolloff = lb.feature.spectral_rolloff(S=stft, sr=sr, roll_percent=0.85)[0]
+    centroid_stats = get_stats(spec_centroid, frequency_domain_features)
 
-    features.update(stats(spec_centroid, "spec_centroid_"))
-    features.update(stats(spec_bw, "spec_bw_"))
-    features.update(stats(spec_rolloff, "spec_rolloff_"))
+    spec_bw = lb.feature.spectral_bandwidth(S=stft, sr=sr)[0]
+    bw_stats = get_stats(spec_bw, frequency_domain_features)
+    spec_rolloff = lb.feature.spectral_rolloff(S=stft, sr=sr, roll_percent=0.85)[0]
+    rolloff_stats = get_stats(spec_rolloff, frequency_domain_features)
 
     mfcc = lb.feature.mfcc(y=y, sr=sr, n_mfcc=13)
-    features.update(stats(mfcc, "mfcc"))
+    mfcc_mean = mfcc.mean(axis=1)
+    mfcc_std = mfcc.std(axis=1)
+    return np.concatenate((centroid_stats, bw_stats, rolloff_stats, mfcc_mean, mfcc_std))
 
+def build_dataset(folder, sr=22050, duration=6.0):
+    get_time_domain_features()
+
+
+def read_files(folder, vehicle):
+    for dir in os.listdir(f"normalized/{vehicle}/"):
+        if dir == '.DS_Store':
+            continue
+        for file in os.listdir(f"normalized/{vehicle}/{dir}"):
+            if file == '.DS_Store':
+                continue
