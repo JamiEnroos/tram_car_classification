@@ -3,11 +3,13 @@ import os
 import librosa as lb
 import numpy as np
 import soundfile as sf
+from matplotlib.ticker import MaxNLocator
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, PredefinedSplit
 from sklearn.metrics import classification_report
+import matplotlib.pyplot as plt
 
 
 def load_audio(path, sr=22050, duration=6.0, mono=True):
@@ -51,7 +53,7 @@ def get_time_domain_features(y, sr, duration=6.0):
     rms_stats = get_stats(rms, time_domain_features)
     return np.concatenate((zcr_stats, rms_stats))
 
-def get_frequency_domain_features(y, sr, duration=6.0):
+def get_frequency_domain_features(y, sr, plot_spectrogram, duration=6.0):
     # Frequency domain
     # magnitude STFT
     stft = np.abs(lb.stft(y, n_fft=sr, hop_length=sr//2))
@@ -63,12 +65,34 @@ def get_frequency_domain_features(y, sr, duration=6.0):
 
     spec_bw = lb.feature.spectral_bandwidth(S=stft, sr=sr)[0]
     bw_stats = get_stats(spec_bw, frequency_domain_features)
+
     spec_rolloff = lb.feature.spectral_rolloff(S=stft, sr=sr, roll_percent=0.85)[0]
     rolloff_stats = get_stats(spec_rolloff, frequency_domain_features)
 
     mfcc = lb.feature.mfcc(y=y, sr=sr, n_mfcc=13)
     mfcc_mean = mfcc.mean(axis=1)
     mfcc_std = mfcc.std(axis=1)
+
+    if plot_spectrogram:
+        print("Plotting spectrogram and MFCC")
+        plt.figure()
+        lb.display.specshow(lb.amplitude_to_db(stft), y_axis='log', x_axis='time', sr=sr, hop_length=sr//2)
+        plt.title("Spectrogram")
+        plt.colorbar()
+        plt.show()
+
+        lb.display.specshow(mfcc, x_axis='time', sr=sr)
+        plt.ylabel("MFCC coefficient")
+        plt.yticks()
+        plt.title("MFCC")
+
+        # Show MFCC coefficient numbers (integers 0-12)
+        plt.gca().yaxis.set_major_locator(MaxNLocator(integer=True))
+
+        plt.colorbar()
+        plt.show()
+
+
     return np.concatenate((centroid_stats, bw_stats, rolloff_stats, mfcc_mean, mfcc_std))
 
 def build_dataset(base_dir = "normalized"):
@@ -85,17 +109,34 @@ def build_dataset(base_dir = "normalized"):
     #print("X shape:", X.shape)  # Should be (n_files, n_features)
     #print("y shape:", y.shape)  # Should be (n_files)
 
-    # We need to scale the feature data for SVM
     return X_train, X_test, X_val, y_train, y_test, y_val
 
-def support_vector_classifier(X_train, y_train, X_test, y_test):
+def support_vector_classifier(X_train, y_train, X_val, y_val, X_test, y_test):
+
+    # Combine Training and Validation data to use the GridSearchCV function
+    X_combined = np.vstack((X_train, X_val))
+    y_combined = np.hstack((y_train, y_val))
+
+    # Create a list where -1 indicates that the sample is from the training set and 0 for the validation set
+    # -1s
+    train_indices = np.full((len(X_train),), -1, dtype=int)
+
+    # 0s
+    val_indices = np.full((len(X_val),), 0, dtype=int)
+
+    # Combine them
+    test_fold = np.concatenate((train_indices, val_indices))
+
+    # Create the PredefinedSplit object
+    ps = PredefinedSplit(test_fold)
 
     # Scale the features so that they affect the classification equally
     scaler = StandardScaler()
     # Params for the SVC
     params = {
-        'svc__C': [0.01, 0.1, 1, 10, 100],
-        'svc__gamma': ['scale', 0.001, 0.01, 0.1, 1]
+        'svc__C': [0.0001, 0.001, 0.01, 0.1, 1, 10],
+        'svc__gamma': ['scale'],
+        'svc__kernel': ['rbf', 'linear']
     }
 
     pipe = make_pipeline(
@@ -103,15 +144,21 @@ def support_vector_classifier(X_train, y_train, X_test, y_test):
         SVC(kernel='rbf', probability=False)
     )
 
-    grid = GridSearchCV(
-        estimator=pipe,
-        param_grid=params,
-        cv=5,
-        n_jobs=-1,
-        scoring='accuracy'
-    )
+    print(f"Train Data Mean (Raw): {np.mean(X_train):.4f}")
+    print(f"Test Data  Mean (Raw): {np.mean(X_test):.4f}")
+    print(f"Validation Data  Mean (Raw): {np.mean(X_val):.4f}\n")
 
-    grid.fit(X_train, y_train)
+    print(f"Train Data Std  (Raw): {np.std(X_train):.4f}")
+    print(f"Test Data  Std  (Raw): {np.std(X_test):.4f}")
+    print(f"Validation Data Std  (Raw): {np.std(X_val):.4f}\n")
+
+    print("Train Max:", np.max(X_train))
+    print("Test Max: ", np.max(X_test))
+    print("Test Min: ", np.min(X_test), "\n")
+
+    grid = GridSearchCV(pipe, param_grid=params, cv=ps, verbose=1)
+
+    grid.fit(X_combined, y_combined)
 
     print(f"Best Parameters found: {grid.best_params_}")
     y_pred = grid.predict(X_test)
@@ -146,8 +193,14 @@ def read_files(base_dir, vehicle, duration=6.0, sr =22050):
 
             full_path = os.path.join(vehicle_dir, filename)
 
+            plot_spectrogram = False
+
+            if filename == "60029__car_sound__car49.wav" or filename == "57215__aliabdelsalam__tram-16.wav":
+                plot_spectrogram = True
+                print(filename, "FILE FOUND \n")
+
             y, sr = load_audio(os.path.join(full_path), sr=sr, duration=duration, mono=True)
-            freq_features = get_frequency_domain_features(y, sr, duration=duration) # should be 1D
+            freq_features = get_frequency_domain_features(y, sr, duration=duration, plot_spectrogram=plot_spectrogram) # should be 1D
             time_features = get_time_domain_features(y, sr, duration=duration)
 
             combined_vec = np.concatenate([freq_features, time_features], axis=0)
@@ -163,7 +216,6 @@ def read_files(base_dir, vehicle, duration=6.0, sr =22050):
 
             if subdir == "train":
                 train_features.append(combined_vec)
-
                 train_labels = np.append(train_labels, current_label)
             elif subdir == "test":
                 test_features.append(combined_vec)
@@ -182,7 +234,7 @@ def read_files(base_dir, vehicle, duration=6.0, sr =22050):
 
 def main():
     X_train, X_test, X_val, y_train, y_test, y_val = build_dataset()
-    support_vector_classifier(X_train, y_train, X_test, y_test)
+    support_vector_classifier(X_train, y_train, X_val, y_val, X_test, y_test)
 
 if __name__ == "__main__":
     main()
