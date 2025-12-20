@@ -1,4 +1,3 @@
-# Main
 import os
 import librosa as lb
 import numpy as np
@@ -10,6 +9,86 @@ from sklearn.svm import SVC
 from sklearn.model_selection import GridSearchCV, PredefinedSplit
 from sklearn.metrics import classification_report
 import matplotlib.pyplot as plt
+
+"""
+Binary sound source classifier for cars and trams using support vector machine.
+
+The project directory structure should be separated into test, train and validation data. Data should be in the data
+directory. The normalize function writes normalized files into the normalized/ directory as .wav files.
+The normalized/ and its subdirs are created automatically if they don't exist.
+
+main.py
+data/
+        test/
+                car/
+                        audio_pack/ <--- corresponding audio should be in dirs under the vehicle
+                        audio_file.wav  <-- or they can be here as well
+                        ....
+                tram/
+                        audio_pack/
+                        ...
+        train/
+                car/
+                        audio_pack/     and same for all vehicle subdirs in data
+                        ...
+                tram/
+        val/
+                car/
+                tram/
+
+
+normalized/         <--- created automatically when normalizing
+        test/
+                car/
+                tram/
+        train/
+                car/
+                tram/
+        val/
+                car/
+                tram/
+"""
+
+def normalize(vehicle, base_dir="data", wr_dir="normalized"):
+    """
+    This function will normalize audio signals and write them as .wav files into wr_dir/...
+    With this function we need to normalize the audio signals only once. After that we can run the model as
+    many times as we want.
+
+    vehicle : string, name of the vehicle subdirectory that we want to normalize (under data/train;test;val)
+    base_dir : string, directory name where to read data from
+    wr_dir : string, directory name to write normalized audio files into
+    """
+    for subdir in os.listdir(base_dir): # test/, train/ and val/
+        subpath = os.path.join(base_dir, subdir)
+        if not os.path.isdir(subpath):
+            continue
+
+        vehicle_dir = os.path.join(subpath, vehicle) # test/{vehicle} ...
+        if not os.path.isdir(vehicle_dir):
+            continue
+
+        for user_dir in os.listdir(vehicle_dir): # sound pack dir, test/{vehicle}/{pack}
+            subpath = os.path.join(vehicle_dir, user_dir)
+            if not os.path.isdir(subpath):
+                subpath = vehicle_dir
+
+            for filename in os.listdir(subpath):
+                if not filename.lower().endswith((".wav", ".mp3", ".m4a")):
+                    continue
+
+                full_path = os.path.join(subpath, filename)
+                try:
+                    audio, fs = lb.load(full_path)
+
+                    audio = lb.util.normalize(audio)
+
+                    wr_path = f"{wr_dir}/{subdir}/{vehicle}/{filename[0:-4]}_norm.wav"
+                    os.makedirs(os.path.dirname(wr_path), exist_ok=True) # Create the output dirs if they don't exist
+                    sf.write(wr_path, audio, fs)
+
+                except Exception as e:
+                    print(f"Failed to load {filename}: {e}")
 
 
 def load_audio(path, sr=22050, duration=6.0, mono=True):
@@ -233,6 +312,12 @@ def read_files(base_dir, vehicle, duration=6.0, sr =22050):
     return X_train, y_train, X_test, y_test, X_val, y_val
 
 def main():
+    # Normalize automatically if dir normalized/train/car doesn't exist. However, you should call normalize manually
+    # if any of the needed directories don't exist
+    if not os.path.isdir("normalized/train/car"):
+        normalize(vehicle="car")
+        normalize(vehicle="tram")
+
     X_train, X_test, X_val, y_train, y_test, y_val = build_dataset()
     support_vector_classifier(X_train, y_train, X_val, y_val, X_test, y_test)
 
