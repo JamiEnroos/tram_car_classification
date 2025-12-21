@@ -47,6 +47,9 @@ normalized/         <--- created automatically when normalizing
         val/
                 car/
                 tram/
+                
+
+In results tram is indicated with 0 and car with 1.
 """
 
 def normalize(vehicle, base_dir="data", wr_dir="normalized"):
@@ -104,77 +107,84 @@ def load_audio(path, sr=22050, duration=6.0, mono=True):
         y = y[:target_len]
     return y, sr
 
-def stats(x, prefix):
-    stats = {}
-    x = np.atleast_2d(x)
 
-    for i in range(x.shape[0]):
-        v = x[i]
-        stats[f"{prefix}{i}_mean"] = float(np.mean(v))
-        stats[f"{prefix}{i}_std"]  = float(np.std(v))
-        """
-        stats[f"{prefix}{i}_min"]  = float(np.min(v))
-        stats[f"{prefix}{i}_max"]  = float(np.max(v))"""
-    return stats
-
-def get_stats(x, features):
+def get_stats(x):
+    """
+    Returns mean, std of given array x as one numpy array
+    """
     mean = np.mean(x)
     std = np.std(x)
     return np.array([mean, std])
 
-def get_time_domain_features(y, sr, duration=6.0):
+def get_time_domain_features(y):
+    """
+    Returns ZCR mean & std and RMS mean & std as one array.
+    """
     time_domain_features = np.zeros(0)
     # Time domain
     zcr = lb.feature.zero_crossing_rate(y)[0]
-    zcr_stats = get_stats(zcr, time_domain_features)
+    zcr_stats = get_stats(zcr)
 
     rms = lb.feature.rms(y=y)[0]
-    rms_stats = get_stats(rms, time_domain_features)
+    rms_stats = get_stats(rms)
     return np.concatenate((zcr_stats, rms_stats))
 
-def get_frequency_domain_features(y, sr, plot_spectrogram, duration=6.0):
+def get_frequency_domain_features(y, sr, plot_spectrogram):
+    """
+    Returns frequency domain features of given signal y as one numpy array
+    y: array, input signal
+    sr: int, sampling rate
+    plot_spectrogram : str, "None" - no plots, "Car" - plots MFCC and spectrogram of car,
+                            "Tram" - plots MFCC and spectrogram of tram
+    """
     # Frequency domain
+    hop_length = 512
+    n_fft = 2048
     # magnitude STFT
-    stft = np.abs(lb.stft(y, n_fft=sr, hop_length=sr//2))
+    stft = np.abs(lb.stft(y, n_fft=n_fft, hop_length=hop_length))
 
     # Features
-    frequency_domain_features = np.zeros(0)
     spec_centroid = lb.feature.spectral_centroid(S=stft, sr=sr)[0]
-    centroid_stats = get_stats(spec_centroid, frequency_domain_features)
+    centroid_stats = get_stats(spec_centroid)
 
     spec_bw = lb.feature.spectral_bandwidth(S=stft, sr=sr)[0]
-    bw_stats = get_stats(spec_bw, frequency_domain_features)
+    bw_stats = get_stats(spec_bw)
 
     spec_rolloff = lb.feature.spectral_rolloff(S=stft, sr=sr, roll_percent=0.85)[0]
-    rolloff_stats = get_stats(spec_rolloff, frequency_domain_features)
+    rolloff_stats = get_stats(spec_rolloff)
 
     mfcc = lb.feature.mfcc(y=y, sr=sr, n_mfcc=13)
-    mfcc_mean = mfcc.mean(axis=1)
-    mfcc_std = mfcc.std(axis=1)
+    mfcc_mean = mfcc.mean(axis=1) # 13 values
+    mfcc_std = mfcc.std(axis=1)   # 13 values
 
-    if plot_spectrogram:
-        print("Plotting spectrogram and MFCC")
+    if plot_spectrogram != "None":
+        #print("Plotting spectrogram and MFCC")
         plt.figure()
-        lb.display.specshow(lb.amplitude_to_db(stft), y_axis='log', x_axis='time', sr=sr, hop_length=sr//2)
-        plt.title("Spectrogram")
+        lb.display.specshow(lb.amplitude_to_db(stft), y_axis='log', x_axis='time', sr=sr, hop_length=hop_length)
+        plt.title(f"{plot_spectrogram} Spectrogram")
         plt.colorbar()
         plt.show()
 
-        lb.display.specshow(mfcc, x_axis='time', sr=sr)
-        plt.ylabel("MFCC coefficient")
+        lb.display.specshow(mfcc[1:], x_axis='time', sr=sr)
+        plt.ylabel("MFCC coefficient (1-12)")
         plt.yticks()
-        plt.title("MFCC")
+        plt.title(f"{plot_spectrogram} MFCCs")
 
         # Show MFCC coefficient numbers (integers 0-12)
-        plt.gca().yaxis.set_major_locator(MaxNLocator(integer=True))
+        #plt.gca().yaxis.set_major_locator(MaxNLocator(integer=True)) # start from 0
 
         plt.colorbar()
         plt.show()
-
 
     return np.concatenate((centroid_stats, bw_stats, rolloff_stats, mfcc_mean, mfcc_std))
 
+
 def build_dataset(base_dir = "normalized"):
+    """
+    Organizes data into train, validation and test sets.
+    base_dir : string, directory name where to read data from
+    returns: train, validation and test sets
+    """
     X_train_car, y_train_car, X_test_car, y_test_car, X_val_car, y_val_car = read_files(base_dir, "car")
     X_train_tram, y_train_tram, X_test_tram, y_test_tram, X_val_tram, y_val_tram = read_files(base_dir, "tram")
 
@@ -185,18 +195,19 @@ def build_dataset(base_dir = "normalized"):
     X_val = np.vstack([X_val_car, X_val_tram])
     y_val = np.concatenate([y_val_car, y_val_tram])
 
-    #print("X shape:", X.shape)  # Should be (n_files, n_features)
-    #print("y shape:", y.shape)  # Should be (n_files)
-
     return X_train, X_test, X_val, y_train, y_test, y_val
 
 def support_vector_classifier(X_train, y_train, X_val, y_val, X_test, y_test):
+    """
+    The actual SVM model.
+    Finds the best parameters using the sklearn pipeline.
+    """
 
     # Combine Training and Validation data to use the GridSearchCV function
     X_combined = np.vstack((X_train, X_val))
     y_combined = np.hstack((y_train, y_val))
 
-    # Create a list where -1 indicates that the sample is from the training set and 0 for the validation set
+    # Create a list where -1 indicates that the sample is from the training set and 0 for the validation set.
     # -1s
     train_indices = np.full((len(X_train),), -1, dtype=int)
 
@@ -206,12 +217,13 @@ def support_vector_classifier(X_train, y_train, X_val, y_val, X_test, y_test):
     # Combine them
     test_fold = np.concatenate((train_indices, val_indices))
 
-    # Create the PredefinedSplit object
+    # Create the PredefinedSplit object, since data was manually split
     ps = PredefinedSplit(test_fold)
 
     # Scale the features so that they affect the classification equally
     scaler = StandardScaler()
-    # Params for the SVC
+
+    # Params for the SVClassifier
     params = {
         'svc__C': [0.0001, 0.001, 0.01, 0.1, 1, 10],
         'svc__gamma': ['scale'],
@@ -220,21 +232,10 @@ def support_vector_classifier(X_train, y_train, X_val, y_val, X_test, y_test):
 
     pipe = make_pipeline(
         scaler,
-        SVC(kernel='rbf', probability=False)
+        SVC(kernel='rbf', probability=False) # Starting kernel
     )
 
-    print(f"Train Data Mean (Raw): {np.mean(X_train):.4f}")
-    print(f"Test Data  Mean (Raw): {np.mean(X_test):.4f}")
-    print(f"Validation Data  Mean (Raw): {np.mean(X_val):.4f}\n")
-
-    print(f"Train Data Std  (Raw): {np.std(X_train):.4f}")
-    print(f"Test Data  Std  (Raw): {np.std(X_test):.4f}")
-    print(f"Validation Data Std  (Raw): {np.std(X_val):.4f}\n")
-
-    print("Train Max:", np.max(X_train))
-    print("Test Max: ", np.max(X_test))
-    print("Test Min: ", np.min(X_test), "\n")
-
+    # Finds the best parameters with cross validation
     grid = GridSearchCV(pipe, param_grid=params, cv=ps, verbose=1)
 
     grid.fit(X_combined, y_combined)
@@ -245,7 +246,27 @@ def support_vector_classifier(X_train, y_train, X_val, y_val, X_test, y_test):
     print("\nFinal Test Set Results:")
     print(classification_report(y_test, y_pred))
 
+    """ 
+        Test if data values are similar
+        print()
+        print(f"Train Data Mean: {np.mean(X_train):.4f}")
+        print(f"Test Data Mean: {np.mean(X_test):.4f}")
+        print(f"Validation Data Mean: {np.mean(X_val):.4f}\n")
+
+        print(f"Train Data Std: {np.std(X_train):.4f}")
+        print(f"Test Data Std: {np.std(X_test):.4f}")
+        print(f"Validation Data Std: {np.std(X_val):.4f}\n")
+
+        print("Train Max:", np.max(X_train))
+        print("Test Max: ", np.max(X_test))
+    """
+
 def read_files(base_dir, vehicle, duration=6.0, sr =22050):
+    """
+    Read all .wav files in given directory and
+    return: split data as numpy arrays.
+
+    """
 
     train_features = []
     train_labels = []
@@ -256,6 +277,8 @@ def read_files(base_dir, vehicle, duration=6.0, sr =22050):
 
     current_label = 100
 
+    zcr_means = []
+    rms_means = []
 
     for subdir in os.listdir(base_dir):
 
@@ -272,15 +295,23 @@ def read_files(base_dir, vehicle, duration=6.0, sr =22050):
 
             full_path = os.path.join(vehicle_dir, filename)
 
-            plot_spectrogram = False
+            plot_spectrogram = "None"
 
-            if filename == "60029__car_sound__car49.wav" or filename == "57215__aliabdelsalam__tram-16.wav":
-                plot_spectrogram = True
-                print(filename, "FILE FOUND \n")
+            # Plot these files
+            if filename == "656929__aliabdelsalam__car-10_norm.wav":
+                plot_spectrogram = "Car"
+                #print(filename, "FILE FOUND \n")
+            elif filename == "tram 14_norm.wav":
+                plot_spectrogram = "Tram"
+                #print(filename, "FILE FOUND \n")
+
 
             y, sr = load_audio(os.path.join(full_path), sr=sr, duration=duration, mono=True)
-            freq_features = get_frequency_domain_features(y, sr, duration=duration, plot_spectrogram=plot_spectrogram) # should be 1D
-            time_features = get_time_domain_features(y, sr, duration=duration)
+            freq_features = get_frequency_domain_features(y, sr, plot_spectrogram=plot_spectrogram) # should be 1D
+            time_features = get_time_domain_features(y)
+
+            zcr_means.append(time_features[0])
+            rms_means.append(time_features[2])
 
             combined_vec = np.concatenate([freq_features, time_features], axis=0)
 
@@ -302,6 +333,13 @@ def read_files(base_dir, vehicle, duration=6.0, sr =22050):
             elif subdir == "val":
                 val_features.append(combined_vec)
                 val_labels = np.append(val_labels, current_label)
+
+    print("Train Label count: ", vehicle, len(train_labels))
+    print("Test Label count: ", vehicle, len(test_labels))
+    print("Validation Label count: ", vehicle, len(val_labels), "\n")
+
+    print(f"{vehicle} zcr mean mean: {np.mean(zcr_means):.4f}")
+    print(f"{vehicle} rms mean mean: {np.mean(rms_means):.4f}\n")
 
     X_train = np.vstack(train_features)
     y_train = np.array(train_labels)
